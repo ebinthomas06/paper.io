@@ -10,8 +10,10 @@ export default function GameCanvas({ playerName, onGameOver }) {
   const [myScore, setMyScore] = useState(0); 
   
   useEffect(() => {
-    // Note: If testing on mobile, replace 'localhost' with your laptop's IP address (e.g., '192.168.1.5')
-    const newSocket = io('http://172.16.198.109:4000'); 
+    // MAGICAL FIX: io() with no arguments automatically connects 
+    // to the same server that served the website.
+    const newSocket = io(); 
+    
     setSocket(newSocket);
     newSocket.emit('joinGame', playerName);
     newSocket.on('gameOver', () => onGameOver());

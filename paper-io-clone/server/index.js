@@ -2,20 +2,24 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 app.use(cors());
 
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] }
-});
-
 // --- CONSTANTS ---
 const GRID_SIZE = 60; 
 const COLORS = [
-  '#FF0055', '#00D4FF', '#CCFF00', '#BD00FF', '#FF9900',
-  '#00FF99', '#FFFF00', '#FF00CC', '#00FFFF', '#FF3333' 
+  '#FF0055', // Neon Red
+  '#00D4FF', // Neon Blue
+  '#CCFF00', // Neon Lime
+  '#BD00FF', // Neon Purple
+  '#FF9900', // Neon Orange
+  '#00FF99', // Spring Green
+  '#FFFF00', // Bright Yellow
+  '#FF00CC', // Hot Pink
+  '#00FFFF', // Cyan
+  '#FF3333'  // Bright Cherry
 ];
 
 // --- STATE ---
@@ -27,12 +31,18 @@ function spawnPlayer(id, name) {
   const x = Math.floor(Math.random() * (GRID_SIZE - 10)) + 5;
   const y = Math.floor(Math.random() * (GRID_SIZE - 10)) + 5;
 
+  // Smart Color Assignment: Pick a color not currently used
   const usedColors = new Set(Object.values(players).map(p => p.color));
   const availableColors = COLORS.filter(c => !usedColors.has(c));
-  const color = availableColors.length > 0 
-    ? availableColors[Math.floor(Math.random() * availableColors.length)]
-    : COLORS[Math.floor(Math.random() * COLORS.length)];
+  
+  let color;
+  if (availableColors.length > 0) {
+    color = availableColors[Math.floor(Math.random() * availableColors.length)];
+  } else {
+    color = COLORS[Math.floor(Math.random() * COLORS.length)];
+  }
 
+  // Create 3x3 Starting Base
   for(let i=x-1; i<=x+1; i++) {
     for(let j=y-1; j<=y+1; j++) {
       grid[i][j] = { owner: id, color: color, type: 'land' };
@@ -47,13 +57,13 @@ function spawnPlayer(id, name) {
     tail: [],
     score: 9,
     dead: false,
-    invulnerable: 60
+    invulnerable: 60 // ~5 seconds of invulnerability
   };
 }
 
-// --- FLOOD FILL ALGO (Updated with SQUASH Mechanic) ---
+// --- FLOOD FILL ALGO (With SQUASH Mechanic) ---
 function fillTerritory(p) {
-  // 1. Convert trail to land
+  // 1. Convert trail to temporary land
   p.tail.forEach(t => {
     if (grid[t.x] && grid[t.x][t.y]) {
       grid[t.x][t.y] = { owner: p.id, color: p.color, type: 'land' };
@@ -61,10 +71,11 @@ function fillTerritory(p) {
   });
   p.tail = [];
 
-  // 2. Flood Fill to find outside
+  // 2. BFS to find "Safe" (Outside) cells
   const safe = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(false));
   const queue = [];
 
+  // Start flood from map borders
   for (let i = 0; i < GRID_SIZE; i++) {
     queue.push({ x: i, y: 0 });
     queue.push({ x: i, y: GRID_SIZE - 1 });
@@ -77,6 +88,7 @@ function fillTerritory(p) {
     if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) continue;
     if (safe[x][y]) continue;
 
+    // Stop flood at own land
     const cell = grid[x][y];
     if (cell && cell.owner === p.id && cell.type === 'land') continue;
 
@@ -88,21 +100,21 @@ function fillTerritory(p) {
     queue.push({ x, y: y - 1 });
   }
 
-  // 3. Capture & CHECK FOR KILLS (The Squash Rule)
+  // 3. Capture "Inside" cells & Check for Squashes
   let score = 0;
   for (let x = 0; x < GRID_SIZE; x++) {
     for (let y = 0; y < GRID_SIZE; y++) {
       if (!safe[x][y]) {
         // This cell is being captured!
         
-        // --- NEW RULE: SQUASH CHECK ---
-        // Check if any OTHER player is standing on this cell right now
+        // --- SQUASH CHECK ---
+        // If an enemy is standing here, they are trapped -> KILL THEM
         Object.values(players).forEach(enemy => {
           if (enemy.id !== p.id && !enemy.dead && enemy.x === x && enemy.y === y) {
              killPlayer(enemy, `SQUASHED by ${p.name}`);
           }
         });
-        // ------------------------------
+        // --------------------
 
         grid[x][y] = { owner: p.id, color: p.color, type: 'land' };
       }
@@ -118,6 +130,7 @@ function killPlayer(p, reason) {
   console.log(`${p.name} died: ${reason}`);
   p.dead = true;
   
+  // Clear their territory
   for(let x=0; x<GRID_SIZE; x++) {
     for(let y=0; y<GRID_SIZE; y++) {
       if (grid[x][y] && grid[x][y].owner === p.id) grid[x][y] = null;
@@ -125,6 +138,11 @@ function killPlayer(p, reason) {
   }
   io.to(p.id).emit('gameOver', { reason });
 }
+
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*", methods: ["GET", "POST"] }
+});
 
 io.on('connection', (socket) => {
   socket.on('joinGame', (name) => {
@@ -152,30 +170,33 @@ setInterval(() => {
     if (p.dead) return;
     if (p.invulnerable > 0) p.invulnerable--;
 
+    // 1. Predict Next Spot
     const nextX = p.x + p.nextDx;
     const nextY = p.y + p.nextDy;
 
-    // Wall Stop
+    // 2. Wall Collision -> Stop (Don't Die)
     if (nextX < 0 || nextX >= GRID_SIZE || nextY < 0 || nextY >= GRID_SIZE) {
       p.dx = 0; p.dy = 0; p.nextDx = 0; p.nextDy = 0;
       return; 
     }
 
-    // Self Hit Check
+    // 3. Self-Tail Collision
     const nextCell = grid[nextX][nextY];
     if (nextCell && nextCell.type === 'tail' && nextCell.owner === p.id) {
+       // If currently stopped, ignore (allows reversing out of walls)
        if (p.dx === 0 && p.dy === 0) return; 
+       
        killPlayer(p, 'Self Hit'); 
        return; 
     }
 
-    // Move
+    // 4. Move
     p.dx = p.nextDx; p.dy = p.nextDy;
     p.x += p.dx; p.y += p.dy;
 
     const cell = grid[p.x][p.y];
 
-    // Enemy Tail Hit
+    // 5. Enemy Tail Collision
     if (cell && cell.type === 'tail') {
       if (cell.owner !== p.id) {
         const enemy = Object.values(players).find(e => e.id === cell.owner);
@@ -183,7 +204,7 @@ setInterval(() => {
       } 
     }
 
-    // Draw / Capture
+    // 6. Draw Tail or Capture Land
     const isOwnLand = cell && cell.owner === p.id && cell.type === 'land';
     if (!isOwnLand) {
       if(p.dx !== 0 || p.dy !== 0) {
@@ -196,6 +217,15 @@ setInterval(() => {
   });
 
   io.emit('gameState', { players: Object.values(players).filter(p=>!p.dead), grid });
-}, 80); 
+}, 80); // 80ms = ~12.5 FPS (Balanced Speed)
+
+// --- DEPLOYMENT: SERVE REACT BUILD ---
+// This allows the Node server to host the Frontend (Single Service)
+const buildPath = path.join(__dirname, '../build');
+app.use(express.static(buildPath));
+
+app.get(/.*/, (req, res) => {
+  res.sendFile(path.join(buildPath, 'index.html'));
+});
 
 server.listen(4000, () => console.log('SERVER RUNNING ON 4000'));
