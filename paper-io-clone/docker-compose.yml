@@ -1,0 +1,19 @@
+version: '3'
+
+services:
+  # 1. YOUR GAME SERVICE
+  game:
+    build: .
+    container_name: paper-io-game
+    ports:
+      - "4000:4000"  # Still accessible locally if needed
+    restart: unless-stopped
+
+  # 2. CLOUDFLARE TUNNEL (The Sidecar)
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: paper-io-tunnel
+    restart: unless-stopped
+    command: tunnel --url http://game:4000  # Points to the 'game' service above
+    depends_on:
+      - game
